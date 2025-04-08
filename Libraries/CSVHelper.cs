@@ -51,15 +51,28 @@ namespace Libraries
         }
 
 
-        public List<T> Read<T>(string path) where T : class, new()
+        public List<T> Read<T>(string path, int startIndex, int count) where T : class, new()
         {
             ReadPreCheck(path);
 
             StreamReader reader = new StreamReader($"{path}");
             List<T> list = new List<T>();
 
+            int accumulationNum = 0;
+
             while (!reader.EndOfStream)
             {
+                accumulationNum++;
+
+                if (accumulationNum < startIndex)
+                {
+                    reader.ReadLine();
+                    continue;
+                }
+                else if (accumulationNum >= startIndex + count)
+                {
+                    break;
+                }
                 T t = new T();
                 PropertyInfo[] props = t.GetType().GetProperties();
 
