@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
@@ -10,6 +11,44 @@ namespace Libraries
 {
     public class CSVHelper
     {
+
+        static PropertyInfo[] props = null;
+        static int PropsCount;
+
+
+        delegate object GetterDelegate(object target);
+        private static GetterDelegate[] _getterDelegates = null;
+
+        delegate void SetterDelegate(object target, object value);
+        private static SetterDelegate[] _setterDelegates = null;
+
+        private static GetterDelegate CreateGetter(PropertyInfo property)
+        {
+            var targetType = typeof(object);
+            var targetParam = Expression.Parameter(targetType, "target");
+            var castTarget = Expression.Convert(targetParam, property.DeclaringType);
+            var propertyGetter = Expression.Call(castTarget, property.GetGetMethod());
+            var lambda = Expression.Lambda<GetterDelegate>(propertyGetter, targetParam);
+            return lambda.Compile();
+        }
+        private static SetterDelegate CreateSetter(PropertyInfo property)
+        {
+            var targetType = typeof(object);
+            var valueType = typeof(object);
+
+            var targetParam = Expression.Parameter(targetType, "target");
+            var valueParam = Expression.Parameter(valueType, "value");
+
+            var castTarget = Expression.Convert(targetParam, property.DeclaringType);
+            var castValue = Expression.Convert(valueParam, property.PropertyType);
+
+            var propertySetter = Expression.Call(castTarget, property.GetSetMethod(), castValue);
+
+            var lambda = Expression.Lambda<SetterDelegate>(propertySetter, targetParam, valueParam);
+            return lambda.Compile();
+        }
+
+
         public void Write<T>(string path, T csvdata)
         {
             WritePreCheck(path);
@@ -46,7 +85,41 @@ namespace Libraries
                         stringBuilder.Append(",");
                 }
                 writer.WriteLine($"{stringBuilder}");
+                writer.WriteLine(',');
                 stringBuilder.Clear();
+            }
+        }
+
+        private void OptimizeWriteList<T>(string path, List<T> csvdatas)
+        {
+            if (props == null || _getterDelegates == null)
+            {
+                props = typeof(T).GetProperties();
+                PropsCount = props.Length;
+                _getterDelegates = props.Select(p => CreateGetter(p)).ToArray();
+            }
+
+            StringBuilder stringBuilder = new StringBuilder(90);
+            char[] chars = new char[90];
+
+            using (StreamWriter writer = new StreamWriter($"{path}", true))
+            {
+                foreach (T csvdata in csvdatas)
+                {
+                    for (int i = 0; i < props.Length; i++)
+                    {
+                        stringBuilder.Append(props[i].GetValue(csvdata));
+                        if (i < props.Length - 1)
+                            stringBuilder.Append(",");
+                    }
+
+                    stringBuilder.CopyTo(0, chars, 0, stringBuilder.Length - 1);
+                    writer.WriteLine(chars, 0, stringBuilder.Length - 1);
+                    stringBuilder.Clear();
+                }
+
+                writer.Flush();
+
             }
         }
 
@@ -86,6 +159,62 @@ namespace Libraries
             }
             reader.Close();
 
+            return list;
+        }
+
+        public List<T> OptimizeRead<T>(string path, int startIndex, int count) where T : class, new()
+        {
+            List<T> list = new List<T>();
+
+            if (props == null || _setterDelegates == null)
+            {
+                props = typeof(T).GetProperties();
+                PropsCount = props.Length;
+                _setterDelegates = props.Select(p => CreateSetter(p)).ToArray();
+            }
+
+            using (StreamReader reader = new StreamReader($"{path}"))
+            {
+                int accumulationNum = 0;
+
+                while (!reader.EndOfStream)
+                {
+                    accumulationNum++;
+
+                    if (accumulationNum < startIndex)
+                    {
+                        reader.ReadLine();
+                        continue;
+                    }
+                    else if (accumulationNum >= startIndex + count)
+                    {
+                        break;
+                    }
+
+                    T t = new T();
+                    ReadOnlySpan<char> datas = reader.ReadLine().AsSpan();
+
+                    int start = 0;
+                    for (int i = 0; i < PropsCount; i++)
+                    {
+                        // 找逗號位置
+                        int commaIndex = datas.Slice(start).IndexOf(',');
+
+                        if (commaIndex == -1)
+                        {
+                            // 最後一欄
+                            _setterDelegates[i](t, datas.Slice(start).ToString());
+                            break;
+                        }
+                        else
+                        {
+                            _setterDelegates[i](t, datas.Slice(start, commaIndex).ToString());
+                            start += commaIndex + 1;
+                        }
+                    }
+                    list.Add(t);
+                }
+            }
             return list;
         }
 
